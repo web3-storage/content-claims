@@ -62,8 +62,6 @@ export class BlockIndexClaimFetcher extends DynamoTable {
         const [region, bucket, ...rest] = carpath.split('/')
         return { region, bucket, key: rest.join('/'), offset, length }
       })
-      // cannot extract a CAR CID from keys with "complete" prefix
-      .filter(item => !item.key.startsWith('complete'))
 
     // TODO: remove when all content is copied over to R2
     let item = items.find(({ bucket }) => bucket === 'carpark-prod-0')
@@ -72,27 +70,24 @@ export class BlockIndexClaimFetcher extends DynamoTable {
     item = item ?? items[0]
     if (!item) return []
 
+    // can derive car cid from /raw keys. not for /complete keys
     const part = bucketKeyToPartCID(item.key)
-    if (!part) return []
-
     const location = [new URL(`https://${item.bucket}.s3.amazonaws.com/${item.key}`)]
-    // offsets are block offsets, not CARv2 index offsets
-    const offset = item.offset - (varint.encodingLength(content.bytes.length + item.length) + content.bytes.length)
     const expiration = Math.ceil((Date.now() / 1000) + (60 * 60)) // expire in an hour
-
-    return Promise.all([
-      buildLocationClaim(this.#signer, { content, location }, expiration),
-      buildRelationClaim(this.#signer, { content, part, offset }, expiration)
-    ])
+    const claims = [
+      buildLocationClaim(this.#signer, { content, location, ...item }, expiration),
+      ...(part ? [buildRelationClaim(this.#signer, { content, part, ...item }, expiration)] : [])
+    ]
+    return Promise.all(claims)
   }
 }
 
 /**
  * @param {import('@ucanto/server').Signer} signer
- * @param {{ content: import('@ucanto/server').UnknownLink, location: URL[] }} data
+ * @param {{ content: import('@ucanto/server').UnknownLink, location: URL[], offset: number, length: number }} data
  * @param {number} [expiration]
  */
-const buildLocationClaim = (signer, { content, location }, expiration) =>
+const buildLocationClaim = (signer, { content, location, offset, length }, expiration) =>
   buildClaim(content, Assert.location.invoke({
     issuer: signer,
     audience: signer,
@@ -100,18 +95,23 @@ const buildLocationClaim = (signer, { content, location }, expiration) =>
     nb: {
       content,
       // @ts-ignore
-      location: location.map(l => l.toString())
+      location: location.map(l => l.toString()),
+      range: {
+        offset,
+        length
+      }
     },
     expiration
   }))
 
 /**
  * @param {import('@ucanto/server').Signer} signer
- * @param {{ content: import('multiformats').UnknownLink, part: import('multiformats').Link, offset: number }} data
+ * @param {{ content: import('multiformats').UnknownLink, part: import('multiformats').Link, offset: number, length: number }} data
  * @param {number} [expiration]
  */
-const buildRelationClaim = async (signer, { content, part, offset }, expiration) => {
-  const index = await encodeIndex(content, offset)
+const buildRelationClaim = async (signer, { content, part, offset, length }, expiration) => {
+  const carOffset = offset - (varint.encodingLength(content.bytes.length + length) + content.bytes.length)
+  const index = await encodeIndex(content, carOffset)
   const invocation = Assert.relation.invoke({
     issuer: signer,
     audience: signer,
