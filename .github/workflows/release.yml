@@ -3,6 +3,17 @@ on:
   push:
     branches:
       - main
+  workflow_dispatch:
+    inputs:
+      force_release_cli:
+        type: boolean
+        description: release packages/cli even if it normally wouldn't (e.g. due to release-please checks)
+        default: false
+      force_release_core:
+        type: boolean
+        description: release packages/core even if it normally wouldn't (e.g. due to release-please checks)
+        default: false
+
 jobs:
   release:
     runs-on: ubuntu-latest
@@ -17,9 +28,10 @@ jobs:
           manifest-file: .github/release-please-manifest.json
           default-branch: main
           release-type: node
-  npm:
+  npm-core:
+    name: npm publish @web3-storage/content-claims
     needs: release
-    if: contains(fromJson(needs.release.outputs.paths_released), 'packages/core')
+    if: force_release_core || contains(fromJson(needs.release.outputs.paths_released), 'packages/core')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v3
@@ -34,5 +46,25 @@ jobs:
       - run: npm ci
       - run: npm run build --workspace=packages/core
       - run: npm publish --access=public --workspace=packages/core
+        env:
+          NODE_AUTH_TOKEN: ${{secrets.NPM_TOKEN}}
+  npm-cli:
+    name: npm publish @web3-storage/content-claims-cli
+    needs: release
+    if: force_release_cli || contains(fromJson(needs.release.outputs.paths_released), 'packages/cli')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+      - uses: pnpm/action-setup@v2.2.3
+        with:
+          version: 8
+      - uses: actions/setup-node@v3
+        with:
+          node-version: 18
+          registry-url: 'https://registry.npmjs.org'
+          cache: 'npm'
+      - run: npm ci
+      - run: npm run build --workspace=packages/cli
+      - run: npm publish --access=public --workspace=packages/cli
         env:
           NODE_AUTH_TOKEN: ${{secrets.NPM_TOKEN}}
